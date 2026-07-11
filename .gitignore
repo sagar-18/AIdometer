@@ -1,0 +1,5 @@
+# Build output
+ClaudeUsageBar.app/
+*.o
+*.swiftmodule
+.DS_Store
