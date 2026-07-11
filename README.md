@@ -44,7 +44,7 @@ Click the gauge for the full dashboard: per-limit progress bars, reset countdown
 ### Homebrew (builds from source — no Gatekeeper prompts, single repo)
 ```bash
 brew tap sagar-18/aidometer https://github.com/sagar-18/AIdometer
-brew install --HEAD sagar-18/aidometer/aidometer
+brew install sagar-18/aidometer/aidometer
 aidometer            # start it (launches detached; survives terminal close)
 ```
 Everything lives in this one repo — the [formula](Formula/aidometer.rb) ships right here in `Formula/`, and `brew tap` points at this repo directly. Launch at Login is enabled automatically on first run (toggle it from the menu).
