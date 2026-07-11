@@ -118,7 +118,7 @@ enum Provider: String, CaseIterable {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "provider") }
     }
     var glyph: String { self == .codex ? "⬡" : "◐" }
-    var appTitle: String { self == .codex ? "Codex Usage" : "Claude Usage" }
+    var appTitle: String { "AIdometer" }
     /// Brand mark bundled as a template SVG — tints with the menu appearance.
     /// Nil when running outside the .app bundle; callers fall back to `glyph`.
     var markImage: NSImage? {
@@ -138,10 +138,11 @@ enum Provider: String, CaseIterable {
 // MARK: - Dropdown layout
 
 enum LayoutStyle: String, CaseIterable {
-    case classic  = "Classic"
-    case rings    = "Rings"
-    case segments = "Segments"
-    case trend    = "Trend + forecast"
+    case classic   = "Classic"
+    case aidometer = "AIdometer"
+    case rings     = "Rings"
+    case segments  = "Segments"
+    case trend     = "Trend + forecast"
 
     static var current: LayoutStyle {
         get { LayoutStyle(rawValue: UserDefaults.standard.string(forKey: "layoutStyle") ?? "") ?? .classic }
@@ -275,6 +276,76 @@ final class RowView: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - AIdometer layout (the signature speedometer dial)
+
+final class DialGaugeView: NSView {
+    private let pct: Double
+    private let color: NSColor
+    private let label: String
+    private let others: String
+    init(pct: Double, color: NSColor, label: String, others: String) {
+        self.pct = pct; self.color = color; self.label = label; self.others = others
+        super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 158))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        let c = NSPoint(x: bounds.midX, y: 62)
+        let r: CGFloat = 80
+
+        let track = NSBezierPath()
+        track.appendArc(withCenter: c, radius: r, startAngle: 180, endAngle: 0, clockwise: true)
+        track.lineWidth = 10
+        track.lineCapStyle = .round
+        NSColor.quaternaryLabelColor.setStroke()
+        track.stroke()
+
+        // Danger-zone ticks at 70% and 90%, like redlines on a real dial.
+        for (mark, tickColor) in [(70.0, NSColor.systemOrange), (90.0, NSColor.systemRed)] {
+            let a = CGFloat((180 - 1.8 * mark) * Double.pi / 180)
+            let tick = NSBezierPath()
+            tick.move(to: NSPoint(x: c.x + cos(a) * (r - 9), y: c.y + sin(a) * (r - 9)))
+            tick.line(to: NSPoint(x: c.x + cos(a) * (r + 9), y: c.y + sin(a) * (r + 9)))
+            tick.lineWidth = 2
+            tickColor.withAlphaComponent(0.6).setStroke()
+            tick.stroke()
+        }
+
+        let p = min(max(pct, 0), 100)
+        if p > 0 {
+            let fill = NSBezierPath()
+            fill.appendArc(withCenter: c, radius: r, startAngle: 180,
+                           endAngle: 180 - 1.8 * p, clockwise: true)
+            fill.lineWidth = 10
+            fill.lineCapStyle = .round
+            color.setStroke()
+            fill.stroke()
+        }
+
+        let a = CGFloat((180 - 1.8 * p) * Double.pi / 180)
+        let needle = NSBezierPath()
+        needle.move(to: c)
+        needle.line(to: NSPoint(x: c.x + cos(a) * (r - 16), y: c.y + sin(a) * (r - 16)))
+        needle.lineWidth = 2.5
+        needle.lineCapStyle = .round
+        NSColor.labelColor.setStroke()
+        needle.stroke()
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: c.x - 4.5, y: c.y - 4.5, width: 9, height: 9)).fill()
+
+        func centered(_ s: String, y: CGFloat, font: NSFont, color: NSColor) {
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            let size = (s as NSString).size(withAttributes: attrs)
+            (s as NSString).draw(at: NSPoint(x: bounds.midX - size.width / 2, y: y), withAttributes: attrs)
+        }
+        centered("\(Int(pct))%", y: 30, font: .monospacedDigitSystemFont(ofSize: 21, weight: .bold), color: color)
+        centered(label, y: 15, font: .systemFont(ofSize: 11, weight: .semibold), color: .labelColor)
+        if !others.isEmpty {
+            centered(others, y: 1, font: .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
+                     color: .secondaryLabelColor)
+        }
+    }
 }
 
 // MARK: - Rings layout
@@ -696,7 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.1.0"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -1157,7 +1228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var freshnessText: String {
-        guard let t = lastSuccess else { return "No data yet" }
+        guard let t = lastSuccess else { return "No mileage yet" }
         let secs = Int(-t.timeIntervalSinceNow)
         if secs < 60 { return "Updated just now" }
         let m = secs / 60
@@ -1184,6 +1255,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          : "vs busiest day this week (\(tokenText(act.peakTokens)))"
 
         switch LayoutStyle.current {
+        case .aidometer:
+            let item = NSMenuItem()
+            item.view = DialGaugeView(pct: todayPct, color: todayColor,
+                                      label: "Today · \(tokenText(act.todayTokens)) tok · \(turns(act.todayTurns))",
+                                      others: "7d \(tokenText(act.weekTokens))    peak \(tokenText(act.peakTokens))")
+            return [item]
         case .rings:
             let item = NSMenuItem()
             item.view = RingsRowView(gauges: [
@@ -1215,11 +1292,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var headerSubtitle: String {
+        let brand = Provider.current.rawValue
         if let plan = planName, !plan.isEmpty {
-            return planTier != nil ? "\(plan.capitalized) plan · \(planTier!) · live"
-                                   : "\(plan.capitalized) plan · live"
+            return planTier != nil ? "\(brand) · \(plan.capitalized) plan · \(planTier!) · live"
+                                   : "\(brand) · \(plan.capitalized) plan · live"
         }
-        return "\(Provider.current.rawValue) · live"
+        return "\(brand) · live"
     }
 
     private func authWarningItem() -> NSMenuItem? {
@@ -1281,7 +1359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let warn = authWarningItem() {
                 menu.addItem(warn)
             } else {
-                let msg = NSMenuItem(title: "Waiting for usage data…", action: nil, keyEquivalent: "")
+                let msg = NSMenuItem(title: "Reading your mileage…", action: nil, keyEquivalent: "")
                 msg.isEnabled = false
                 menu.addItem(msg)
                 let info = NSMenuItem(title: "Endpoint busy (rate-limited) — retrying automatically", action: nil, keyEquivalent: "")
@@ -1352,6 +1430,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch layout {
         case .classic:
             break
+        case .aidometer:
+            // The signature dial: the limit closest to its ceiling, big.
+            if let worstInfo = infos.max(by: { $0.pct < $1.pct }) {
+                let others = infos.filter { $0.kind != worstInfo.kind }
+                    .map { $0.short }.joined(separator: "    ")
+                let item = NSMenuItem()
+                item.view = DialGaugeView(pct: worstInfo.pct,
+                                          color: theme.color(kind: worstInfo.kind, pct: worstInfo.pct),
+                                          label: "\(worstInfo.label) · \(worstInfo.reset)",
+                                          others: others)
+                menu.addItem(item)
+            }
         case .rings:
             let gauges = infos.map { i -> (label: String, reset: String, pct: Double, color: NSColor) in
                 let short: String
@@ -1753,6 +1843,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = NSAlert()
         a.messageText = "AIdometer \(Self.currentVersion)"
         a.informativeText = """
+        The odometer for your AI — check your mileage before you hit the limit.
+
         Unofficial menu-bar usage tracker. Not affiliated with, or endorsed by, Anthropic or OpenAI.
 
         It reads YOUR usage from YOUR own local logins — the Claude Code token in your Keychain and/or the Codex CLI token in ~/.codex — and calls undocumented endpoints that may change at any time.

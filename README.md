@@ -1,6 +1,6 @@
 # AIdometer 🏁
 
-**The odometer for your AI.** A tiny, beautiful macOS menu-bar gauge for your **Claude** and **OpenAI Codex** usage limits — session, weekly, and monthly windows with reset countdowns, live in your menu bar.
+**The odometer for your AI — check your mileage before you hit the limit.** A tiny, beautiful macOS menu-bar gauge for your **Claude** and **OpenAI Codex** usage limits — session, weekly, and monthly windows with reset countdowns, live in your menu bar.
 
 ```
 ◐ 5h 2% · wk 4% · Fab 8%      (Claude)
@@ -25,7 +25,7 @@ Click the gauge for the full dashboard: per-limit progress bars, reset countdown
 - 🔀 **Two providers** — track **Claude** (default) or **OpenAI Codex**; switch instantly with the brand-mark toggle in the dropdown header. Codex adapts to your plan: Plus/Pro show 5-hour + weekly windows, Go shows its monthly window, Business/Enterprise seats (which OpenAI meters centrally, exposing no personal windows) fall back to token/turn activity from the analytics API. The menu-bar glyph tells you which is active: ◐ Claude · ⬡ Codex
 - 🎯 Exact percentages — the same numbers as the claude.ai usage page
 - 🎨 **9 themes** — Ocean (default), Severity, Claude, Per-Metric, Minimal, Catppuccin, Nord, Dracula, Terminal
-- 🧩 **4 dashboard layouts** — Classic, Rings (gauge cluster), Segments (threshold-marked cells), Trend + forecast ("at this pace: 100% ≈ Sat 2 PM", from locally kept history)
+- 🧩 **5 dashboard layouts** — Classic, **AIdometer** (the signature speedometer dial: needle, redline ticks at 70/90%, the limit closest to its ceiling front and center), Rings (gauge cluster), Segments (threshold-marked cells), Trend + forecast ("at this pace: 100% ≈ Sat 2 PM", from locally kept history)
 - 📏 **4 menu-bar styles** — 5-hour session only (default), Compact (worst limit), Full, or a tiny Ring icon (~18px) — narrow styles fit crowded/notched menu bars
 - ⏱️ **Reset countdowns** per limit, color-coded status (Healthy → Moderate → High → Critical)
 - ⚠️ **Honest about staleness** — an expired sign-in shows `⚠︎` on the icon and a warning row (never stale numbers passing as live), plus an "Updated Xm ago" line and auto-refresh on wake from sleep

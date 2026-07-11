@@ -2,7 +2,7 @@ class Aidometer < Formula
   desc "The odometer for your AI — Claude & Codex usage limits in your menu bar"
   homepage "https://github.com/sagar-18/AIdometer"
   license "MIT"
-  version "1.0.0"
+  version "1.1.0"
 
   # Builds from source (locally compiled → no Gatekeeper quarantine, no signing needed).
   head "https://github.com/sagar-18/AIdometer.git", branch: "main"
@@ -21,7 +21,7 @@ class Aidometer < Formula
 
   def caveats
     <<~EOS
-      ▸ Start it:      aidometer
+      ▸ Check your AI mileage:   aidometer
         or open:       open "#{opt_prefix}/AIdometer.app"
       ▸ Launch at Login is enabled automatically on first run
         (toggle it from the menu-bar dropdown).
