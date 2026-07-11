@@ -145,7 +145,7 @@ enum LayoutStyle: String, CaseIterable {
     case trend     = "Trend + forecast"
 
     static var current: LayoutStyle {
-        get { LayoutStyle(rawValue: UserDefaults.standard.string(forKey: "layoutStyle") ?? "") ?? .classic }
+        get { LayoutStyle(rawValue: UserDefaults.standard.string(forKey: "layoutStyle") ?? "") ?? .aidometer }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "layoutStyle") }
     }
 }
@@ -561,7 +561,7 @@ final class StatRowView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-// Freshness line with a trailing link: "Updated 2m ago · claude.ai usage ↗"
+// Freshness line with a trailing link: "Updated 2m ago · claude.ai mileage ↗"
 final class FreshLineView: NSView {
     private let label: NSTextField
     init(text: String, linkTitle: String, target: AnyObject?, action: Selector?) {
@@ -767,7 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.1.0"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.2.0"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -1063,6 +1063,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (name, tier)
     }
 
+    /// The AIdometer layout is the full car-mode experience: refuels, mileage,
+    /// service due. Every other layout keeps the literal usage vocabulary.
+    private var carVoice: Bool { LayoutStyle.current == .aidometer }
+
     private func resetsIn(_ iso: String?) -> String {
         guard let iso = iso else { return "" }
         let fmt = ISO8601DateFormatter()
@@ -1070,11 +1074,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let date = fmt.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
         guard let d = date else { return "" }
         let secs = d.timeIntervalSinceNow
-        if secs <= 0 { return "resetting now" }
+        let verb = carVoice ? "refuels" : "resets"
+        if secs <= 0 { return carVoice ? "refueling now" : "resetting now" }
         let h = Int(secs) / 3600, m = (Int(secs) % 3600) / 60
         let days = h / 24
-        if days >= 1 { return "resets in \(days)d \(h % 24)h" }
-        return h > 0 ? "resets in \(h)h \(m)m" : "resets in \(m)m"
+        if days >= 1 { return "\(verb) in \(days)d \(h % 24)h" }
+        return h > 0 ? "\(verb) in \(h)h \(m)m" : "\(verb) in \(m)m"
     }
 
     private func iconFor(_ kind: String) -> String {
@@ -1092,7 +1097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let eta = UsageHistory.forecast(kind: kind, current: pct) {
             let fmt = DateFormatter()
             fmt.dateFormat = "EEE h a"
-            return "at this pace: 100% ≈ \(fmt.string(from: eta))\(resetPart)"
+            return "at this speed: 100% ≈ \(fmt.string(from: eta))\(resetPart)"
         }
         let hasHistory = UsageHistory.series(kind: kind, hours: kind == "session" ? 5 : 72).count >= 2
         return (hasHistory ? "steady — no runout expected" : "collecting history…") + resetPart
@@ -1230,10 +1235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var freshnessText: String {
         guard let t = lastSuccess else { return "No mileage yet" }
         let secs = Int(-t.timeIntervalSinceNow)
-        if secs < 60 { return "Updated just now" }
+        let verb = "Updated"
+        if secs < 60 { return "\(verb) just now" }
         let m = secs / 60
-        if m < 60 { return "Updated \(m)m ago" }
-        return "Updated \(m / 60)h \(m % 60)m ago"
+        if m < 60 { return "\(verb) \(m)m ago" }
+        return "\(verb) \(m / 60)h \(m % 60)m ago"
     }
 
     private func tokenText(_ n: Int) -> String {
@@ -1407,7 +1413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(info)
             }
             let fresh = NSMenuItem()
-            let line = FreshLineView(text: freshnessText, linkTitle: "Codex usage ↗",
+            let line = FreshLineView(text: freshnessText, linkTitle: carVoice ? "Codex mileage ↗" : "Codex usage ↗",
                                      target: self, action: #selector(openUsageFromMenu))
             fresh.view = line
             menu.addItem(fresh)
@@ -1483,7 +1489,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let fresh = NSMenuItem()
         let line = FreshLineView(text: freshnessText,
-                                 linkTitle: Provider.current == .codex ? "Codex usage ↗" : "claude.ai usage ↗",
+                                 linkTitle: Provider.current == .codex ? (carVoice ? "Codex mileage ↗" : "Codex usage ↗")
+                                                       : (carVoice ? "claude.ai mileage ↗" : "claude.ai usage ↗"),
                                  target: self, action: #selector(openUsageFromMenu))
         fresh.view = line
         menu.addItem(fresh)
@@ -1497,12 +1504,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // These two only appear when they matter — never buried in Settings.
         if updating {
-            let it = NSMenuItem(title: "Updating… (rebuilding via brew)", action: nil, keyEquivalent: "")
+            let it = NSMenuItem(title: carVoice ? "🔧 In the shop (rebuilding via brew)…"
+                                                : "Updating… (rebuilding via brew)", action: nil, keyEquivalent: "")
             it.isEnabled = false
             it.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
             menu.addItem(it)
         } else if let v = latestVersion {
-            let it = NSMenuItem(title: "Update to \(v) available…", action: #selector(installUpdate), keyEquivalent: "")
+            let it = NSMenuItem(title: carVoice ? "🔧 Service due — \(v) available…"
+                                                : "Update to \(v) available…", action: #selector(installUpdate), keyEquivalent: "")
             it.target = self
             it.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
             menu.addItem(it)
