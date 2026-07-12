@@ -606,9 +606,23 @@ final class FooterStripView: NSView {
         for (i, b) in buttons.enumerated() {
             let btn = HoverButton(frame: NSRect(x: 16 + slot * CGFloat(i) + slot / 2 - 14, y: 5, width: 28, height: 28))
             btn.isBordered = false
-            btn.image = NSImage(systemSymbolName: b.symbol, accessibilityDescription: b.hint)?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
-            btn.imagePosition = .imageOnly
+            // Bake the color into the symbol (paletteColors) instead of relying
+            // on NSButton.contentTintColor — button tinting of template images
+            // inside menu views is unreliable on pre-Tahoe macOS, leaving the
+            // icons invisible against the menu background.
+            if let base = NSImage(systemSymbolName: b.symbol, accessibilityDescription: b.hint) {
+                let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+                    .applying(NSImage.SymbolConfiguration(paletteColors: [.secondaryLabelColor]))
+                btn.image = base.withSymbolConfiguration(cfg)
+                btn.imagePosition = .imageOnly
+            } else {
+                // Symbol missing on this macOS: readable text fallback.
+                let glyphs = ["arrow.clockwise": "↻", "gearshape": "⚙", "info.circle": "ⓘ", "power": "⏻"]
+                btn.attributedTitle = NSAttributedString(string: glyphs[b.symbol] ?? "•", attributes: [
+                    .font: NSFont.systemFont(ofSize: 15),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ])
+            }
             btn.contentTintColor = .secondaryLabelColor
             btn.target = target
             btn.action = b.action
@@ -680,7 +694,10 @@ final class HeaderView: NSView {
 
         let iv = NSImageView(frame: NSRect(x: 16, y: 15, width: 22, height: 22))
         let cfg = NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
-        iv.image = NSImage(systemSymbolName: themeSymbol, accessibilityDescription: nil)?
+        // Some theme symbols need newer SF Symbols sets (e.g. Severity's gauge
+        // needle symbol needs macOS 14) — fall back to the plain gauge.
+        iv.image = (NSImage(systemSymbolName: themeSymbol, accessibilityDescription: nil)
+                    ?? NSImage(systemSymbolName: "gauge", accessibilityDescription: nil))?
             .withSymbolConfiguration(cfg)
         iv.contentTintColor = accent
         addSubview(iv)
@@ -698,9 +715,18 @@ final class HeaderView: NSView {
         let btn = NSButton(frame: NSRect(x: frame.width - 48, y: 12, width: 32, height: 28))
         btn.isBordered = false
         if let icon = switchIcon {
-            btn.image = icon
+            // Bake the tint: template-image tinting via the button is unreliable
+            // in menu views on pre-Tahoe macOS (icon can render invisibly).
+            // Block-based NSImage re-renders per appearance, so the dynamic
+            // color still adapts to light/dark menus.
+            let tinted = NSImage(size: icon.size, flipped: false) { rect in
+                icon.draw(in: rect)
+                NSColor.secondaryLabelColor.set()
+                rect.fill(using: .sourceAtop)
+                return true
+            }
+            btn.image = tinted
             btn.imagePosition = .imageOnly
-            btn.contentTintColor = .secondaryLabelColor
         } else {
             btn.attributedTitle = NSAttributedString(string: switchGlyph, attributes: [
                 .font: NSFont.systemFont(ofSize: 17, weight: .semibold),
@@ -767,7 +793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.2.0"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.2.1"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
