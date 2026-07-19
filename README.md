@@ -26,10 +26,14 @@ Click the gauge for the full dashboard: per-limit progress bars, reset countdown
 - 🎯 Exact percentages — the same numbers as the claude.ai usage page
 - 🎨 **9 themes** — Ocean (default), Severity, Claude, Per-Metric, Minimal, Catppuccin, Nord, Dracula, Terminal
 - 🧩 **5 dashboard layouts** — Classic, **AIdometer** (the signature speedometer dial: needle, redline ticks at 70/90%, the limit closest to its ceiling front and center), Rings (gauge cluster), Segments (threshold-marked cells), Trend + forecast ("at this pace: 100% ≈ Sat 2 PM", from locally kept history)
-- 📏 **4 menu-bar styles** — 5-hour session only (default), Compact (worst limit), Full, or a tiny Ring icon (~18px) — narrow styles fit crowded/notched menu bars
+- 📏 **5 menu-bar styles** — 5-hour session only (default), Compact (worst limit), Full, a tiny Ring icon (~18px), or the **Notch HUD**: your usage in a pill hugging the MacBook notch (% on one flank, mini gauge on the other), visible even in fullscreen; click it to open the menu. Falls back gracefully on Macs without a notch
 - ⏱️ **Reset countdowns** per limit, color-coded status (Healthy → Moderate → High → Critical)
 - ⚠️ **Honest about staleness** — an expired sign-in shows `⚠︎` on the icon and a warning row (never stale numbers passing as live), plus an "Updated Xm ago" line and auto-refresh on wake from sleep
 - ⚙️ **Live settings** — theme/layout/style changes apply instantly, without the menu closing
+- ⌨️ **Claude Code CLI status line** (on by default when Claude Code is installed) — your usage limits right in the terminal prompt next to model and context %: `Opus 4.8 · ctx 34% · ◐ 5h 12% · wk 15% · Fab 24%`. Merges safely into `~/.claude/settings.json` (backs up anything you had), keeps no credentials on disk, and shows the data's age so stale numbers never pass as live. Toggle in Settings
+- 🔔 **Threshold notifications** — native alerts when a limit crosses 25/50/70/90/95/100% (each limit tracked independently, once per crossing, sound at the redline). Pick your own thresholds with the chips in Settings → Notifications; new releases also notify, once per version
+- ⌨️ **Keyboard backlight blink** — your keyboard pulses 3× at each threshold crossing, a heads-up you can catch in the corner of your eye during late-night sessions. On by default; the first blink explains itself; toggle in Settings
+- 🎉 **What's New after updates** — a one-time summary of what changed, so features never go unnoticed
 - 🔁 **Launch at Login** on by default from first run (modern `SMAppService`); toggle anytime
 - ⬆️ **In-app updates** — checks GitHub on launch, menu-open, and wake; shows a blue `↑` on the icon and an "Update available…" row; one click rebuilds via brew and relaunches (no Sparkle, no downloaded binaries)
 - 🪶 Native Swift/AppKit, essentially one source file, no dependencies, no telemetry
@@ -41,13 +45,13 @@ Click the gauge for the full dashboard: per-limit progress bars, reset countdown
 
 ## Install
 
-### Homebrew (builds from source — no Gatekeeper prompts, single repo)
+### Homebrew (builds from source — no Gatekeeper prompts)
 ```bash
-brew tap sagar-18/aidometer https://github.com/sagar-18/AIdometer
-brew install sagar-18/aidometer/aidometer
+brew tap sagar-18/aidometer
+brew install aidometer
 aidometer            # start it (launches detached; survives terminal close)
 ```
-Everything lives in this one repo — the [formula](Formula/aidometer.rb) ships right here in `Formula/`, and `brew tap` points at this repo directly. Launch at Login is enabled automatically on first run (toggle it from the menu).
+The formula lives in [sagar-18/homebrew-aidometer](https://github.com/sagar-18/homebrew-aidometer) (and a copy ships in this repo's `Formula/` for older installs). Launch at Login is enabled automatically on first run (toggle it from the menu).
 
 To update later: AIdometer checks GitHub automatically and flags a new release with a blue **↑** on the menu-bar icon plus an **"Update to X.Y.Z available…"** row — one click rebuilds via brew and relaunches. Or manually: `brew update && brew reinstall aidometer`.
 
