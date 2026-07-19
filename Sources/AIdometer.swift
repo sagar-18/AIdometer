@@ -1085,7 +1085,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.3.0"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.4.0"
+
+    /// Highlights shown in the "What's New" dialog after an update. Keep the top
+    /// entry in sync with the release being shipped.
+    static let whatsNew: (version: String, lines: [String]) = ("1.4.0", [
+        "⌨️  Claude Code CLI status line — show your Claude/Codex usage right in your terminal prompt (Settings → enable it)",
+        "🕐  The status line is honest about freshness — it shows how old the numbers are",
+        "🔔  Update notifications now announce new releases even if you never open the menu",
+    ])
+
+    /// Shows the highlights once per new version (never on a fresh install).
+    private func showWhatsNewIfUpdated() {
+        let key = "lastWhatsNewVersion"
+        let seen = UserDefaults.standard.string(forKey: key)
+        // Fresh install (nothing seen yet): just record, don't pop.
+        guard let seen = seen else {
+            UserDefaults.standard.set(Self.currentVersion, forKey: key)
+            return
+        }
+        guard seen != Self.currentVersion, Self.currentVersion == Self.whatsNew.version else {
+            UserDefaults.standard.set(Self.currentVersion, forKey: key)
+            return
+        }
+        UserDefaults.standard.set(Self.currentVersion, forKey: key)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let a = NSAlert()
+            a.messageText = "AIdometer \(Self.currentVersion) 🏎"
+            a.informativeText = "What's new:\n\n" + Self.whatsNew.lines.joined(separator: "\n\n")
+            a.addButton(withTitle: "Got it")
+            a.addButton(withTitle: "See all changes")
+            if a.runModal() == .alertSecondButtonReturn {
+                NSWorkspace.shared.open(URL(string: "https://github.com/sagar-18/AIdometer/blob/main/CHANGELOG.md")!)
+            }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -1097,6 +1131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // (external display, lid close) re-evaluate placement or fall back.
         notchHUD.onClick = { [weak self] in self?.statusItem.button?.performClick(nil) }
         requestNotifPermission()   // update alerts are always armed
+        showWhatsNewIfUpdated()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             self?.updateStatusTitle()
@@ -1224,6 +1259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastSuccess = Date()
                     self.authState = .ok
                     UsageHistory.record(ls)
+                    self.writeStatusFile(ls)
                 } else if errType == "authentication_error" {
                     self.authState = .expired
                 } else if errType == "no_token" {
@@ -1428,6 +1464,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let hasHistory = UsageHistory.series(kind: kind, hours: kind == "session" ? 5 : 72).count >= 2
         return (hasHistory ? "steady — no runout expected" : "collecting history…") + resetPart
+    }
+
+    // MARK: - Claude Code statusline export
+    //
+    // Built against Anthropic's public statusline contract: our installed shell
+    // script reads Claude Code's stdin JSON AND this file, so the CLI prompt can
+    // show usage limits (5h/weekly/…) that the statusline data doesn't carry.
+
+    private static var statusDir: String { NSHomeDirectory() + "/.aidometer" }
+    private static var statusFile: String { statusDir + "/usage.json" }
+
+    /// Writes the live usage summary the statusline script reads.
+    private func writeStatusFile(_ limits: [[String: Any]]) {
+        let infos = limitInfos(limits)
+        let parts = infos.map { ["short": $0.short, "pct": Int($0.pct)] as [String: Any] }
+        let worst = infos.map { $0.pct }.max() ?? 0
+        let payload: [String: Any] = [
+            "provider": Provider.current.rawValue,
+            "glyph": Provider.current.glyph,
+            "worst": Int(worst),
+            "line": infos.map { $0.short }.joined(separator: " · "),
+            "limits": parts,
+            "updated": Date().timeIntervalSince1970,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        try? FileManager.default.createDirectory(atPath: Self.statusDir,
+                                                 withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: Self.statusFile))
+    }
+
+    /// The status line script — our own; reads Claude Code's stdin and merges
+    /// our usage.json. jq-free (pure shell + python3) so it works out of the box.
+    private var statuslineScript: String {
+        let template = """
+        #!/bin/bash
+        # AIdometer status line for Claude Code. Shows context% (from Claude Code)
+        # plus your AIdometer usage limits. Managed by AIdometer — reinstall from
+        # the app menu to update.
+        input=$(cat)
+        ctx=$(printf '%s' "$input" | python3 -c 'import sys,json
+        d=json.load(sys.stdin)
+        p=d.get("context_window",{}).get("used_percentage",0) or 0
+        print(f"ctx {int(p)}%")' 2>/dev/null)
+        model=$(printf '%s' "$input" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("model",{}).get("display_name",""))' 2>/dev/null)
+        usage=$(python3 -c 'import json, time
+        try:
+            d=json.load(open("__USAGE_FILE__"))
+            age=int(time.time()-d.get("updated",0))
+            # Be honest about staleness — the cache only refreshes while the
+            # AIdometer app is running. Never let old numbers pass as live.
+            if age < 120: tag=""
+            elif age < 3600: tag=f" ({age//60}m ago)"
+            elif age < 86400: tag=f" ({age//3600}h ago)"
+            else: tag=" (stale — is AIdometer running?)"
+            print(d["glyph"]+" "+d["line"]+tag)
+        except Exception:
+            print("")' 2>/dev/null)
+        out="$model"
+        [ -n "$ctx" ] && out="$out · $ctx"
+        [ -n "$usage" ] && out="$out · $usage"
+        echo "${out# · }"
+        """
+        return template.replacingOccurrences(of: "__USAGE_FILE__", with: Self.statusFile)
+    }
+
+    private static var scriptPath: String { statusDir + "/statusline.sh" }
+    private static var claudeSettingsPath: String { NSHomeDirectory() + "/.claude/settings.json" }
+
+    private func readClaudeSettings() -> [String: Any] {
+        guard let data = FileManager.default.contents(atPath: Self.claudeSettingsPath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return obj
+    }
+    private func writeClaudeSettings(_ settings: [String: Any]) throws {
+        let out = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+        try FileManager.default.createDirectory(atPath: (Self.claudeSettingsPath as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        try out.write(to: URL(fileURLWithPath: Self.claudeSettingsPath))
+    }
+
+    /// On when our command is the active statusLine.
+    var statuslineEnabled: Bool {
+        ((readClaudeSettings()["statusLine"] as? [String: Any])?["command"] as? String) == Self.scriptPath
+    }
+
+    private func setStatusline(_ on: Bool) {
+        do {
+            var settings = readClaudeSettings()
+            if on {
+                try FileManager.default.createDirectory(atPath: Self.statusDir, withIntermediateDirectories: true)
+                try statuslineScript.write(toFile: Self.scriptPath, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: Self.scriptPath)
+                if let existing = settings["statusLine"], !(existing is NSNull),
+                   (existing as? [String: Any])?["command"] as? String != Self.scriptPath {
+                    settings["statusLine_backup_aidometer"] = existing   // preserve theirs
+                }
+                settings["statusLine"] = ["type": "command", "command": Self.scriptPath]
+                if let ls = lastLimits { writeStatusFile(ls) }
+            } else {
+                // Restore their backup if we made one, else remove entirely.
+                if let backup = settings["statusLine_backup_aidometer"] {
+                    settings["statusLine"] = backup
+                    settings.removeValue(forKey: "statusLine_backup_aidometer")
+                } else {
+                    settings.removeValue(forKey: "statusLine")
+                }
+            }
+            try writeClaudeSettings(settings)
+        } catch {
+            let a = NSAlert()
+            a.messageText = "Couldn't \(on ? "enable" : "disable") the status line"
+            a.informativeText = error.localizedDescription
+            a.runModal()
+        }
     }
 
     // MARK: - Threshold alerts (notifications + backlight blink)
@@ -2071,6 +2221,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let blinkItem = NSMenuItem()
         blinkItem.view = blinkRow
         menu.addItem(blinkItem)
+
+        // Same checkmark idiom as Launch at Login / Backlight blink above, for a
+        // consistent settings menu (switches only live inside the Notifications
+        // sub-panel).
+        let slRow = HoverRow(value: "Claude Code CLI status line", width: 200)
+        slRow.isChecked = { [weak self] in self?.statuslineEnabled ?? false }
+        slRow.onPick = { [weak self, weak slRow] _ in
+            guard let self = self else { return }
+            let turningOn = !self.statuslineEnabled
+            self.setStatusline(turningOn)
+            slRow?.needsDisplay = true
+            if turningOn {
+                let a = NSAlert()
+                a.messageText = "Status line on 🏎"
+                a.informativeText = "Your Claude Code prompt now shows your AIdometer usage. Start a new session or run /statusline to see it."
+                a.runModal()
+            }
+        }
+        let slItem = NSMenuItem()
+        slItem.view = slRow
+        menu.addItem(slItem)
 
         let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesClicked), keyEquivalent: "")
         updatesItem.target = self
