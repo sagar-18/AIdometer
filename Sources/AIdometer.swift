@@ -1,6 +1,7 @@
 import Cocoa
 import QuartzCore
 import ServiceManagement
+import UserNotifications
 
 // MARK: - Color helpers
 
@@ -98,6 +99,7 @@ enum BarStyle: String, CaseIterable {
     case compact = "Compact (worst limit)"
     case session = "5-hour session only"
     case ring    = "Ring icon (worst limit)"
+    case notch   = "Notch HUD"
 
     // Narrow default: crowded/notched menu bars silently hide wide items, and a
     // hidden icon looks like a broken install to a first-time user.
@@ -276,6 +278,174 @@ final class RowView: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - Keyboard backlight blinker (threshold alerts you can see in the dark)
+//
+// Uses Apple's private CoreBrightness framework — there is no public API for
+// the keyboard backlight. Loaded dynamically and defensively: if the framework
+// or its selectors change in a macOS update, everything degrades to a silent
+// no-op. Never touches Caps Lock or any key state.
+
+@objc private protocol KBBrightnessClient {
+    func copyKeyboardBacklightIDs() -> [NSNumber]
+    func brightness(forKeyboard: UInt64) -> Float
+    func setBrightness(_ brightness: Float, forKeyboard: UInt64) -> Bool
+}
+
+final class KeyboardBlinker {
+    private let client: KBBrightnessClient?
+    private var busy = false
+
+    init() {
+        guard let bundle = Bundle(path: "/System/Library/PrivateFrameworks/CoreBrightness.framework"),
+              bundle.load(),
+              let cls = NSClassFromString("KeyboardBrightnessClient") as? NSObject.Type else {
+            client = nil
+            return
+        }
+        let instance = cls.init()
+        guard instance.responds(to: #selector(KBBrightnessClient.copyKeyboardBacklightIDs)),
+              instance.responds(to: #selector(KBBrightnessClient.setBrightness(_:forKeyboard:))) else {
+            client = nil
+            return
+        }
+        client = unsafeBitCast(instance, to: KBBrightnessClient.self)
+    }
+
+    var available: Bool { client != nil }
+
+    /// Three quick blinks, then restore the original brightness.
+    func pulse(times: Int = 3) {
+        guard let client = client, !busy else { return }
+        let ids = client.copyKeyboardBacklightIDs().map { $0.uint64Value }
+        guard !ids.isEmpty else { return }
+        busy = true
+        let original = ids.map { (id: $0, level: client.brightness(forKeyboard: $0)) }
+        let interval = 0.16
+        for i in 0..<(times * 2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(i)) {
+                let on = i % 2 == 0
+                for o in original {
+                    // Blink visibly whatever the current level: bright if the
+                    // backlight is dim/off, dark if it's already bright.
+                    let blinkLevel: Float = o.level > 0.5 ? 0 : 1
+                    _ = client.setBrightness(on ? blinkLevel : o.level, forKeyboard: o.id)
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(times * 2) + 0.05) { [weak self] in
+            for o in original { _ = client.setBrightness(o.level, forKeyboard: o.id) }
+            self?.busy = false
+        }
+    }
+}
+
+// MARK: - Notch HUD (Menu Bar Style: readouts hugging the notch)
+
+final class NotchHUDView: NSView {
+    var leftText = ""
+    var color: NSColor = .white
+    var pct: Double = 0
+    var notchWidth: CGFloat = 180
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Black shape that visually extends the notch: square top, rounded
+        // bottom corners.
+        let r: CGFloat = 12
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: 0, y: bounds.maxY))
+        p.line(to: NSPoint(x: 0, y: r))
+        p.appendArc(withCenter: NSPoint(x: r, y: r), radius: r, startAngle: 180, endAngle: 270, clockwise: false)
+        p.line(to: NSPoint(x: bounds.maxX - r, y: 0))
+        p.appendArc(withCenter: NSPoint(x: bounds.maxX - r, y: r), radius: r, startAngle: 270, endAngle: 360, clockwise: false)
+        p.line(to: NSPoint(x: bounds.maxX, y: bounds.maxY))
+        p.close()
+        NSColor.black.setFill()
+        p.fill()
+
+        let flank = max((bounds.width - notchWidth) / 2, 1)
+
+        // Left flank: glyph + percentage
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold),
+            .foregroundColor: color,
+        ]
+        let size = (leftText as NSString).size(withAttributes: attrs)
+        (leftText as NSString).draw(at: NSPoint(x: (flank - size.width) / 2,
+                                                y: (bounds.height - size.height) / 2),
+                                    withAttributes: attrs)
+
+        // Right flank: mini semicircular gauge
+        let c = NSPoint(x: bounds.maxX - flank / 2, y: bounds.midY - 4)
+        let gr: CGFloat = 8
+        let track = NSBezierPath()
+        track.appendArc(withCenter: c, radius: gr, startAngle: 180, endAngle: 0, clockwise: true)
+        track.lineWidth = 3
+        track.lineCapStyle = .round
+        NSColor(white: 0.28, alpha: 1).setStroke()
+        track.stroke()
+        let clamped = min(max(pct, 0), 100)
+        if clamped > 0 {
+            let fill = NSBezierPath()
+            fill.appendArc(withCenter: c, radius: gr, startAngle: 180,
+                           endAngle: 180 - 1.8 * clamped, clockwise: true)
+            fill.lineWidth = 3
+            fill.lineCapStyle = .round
+            color.setStroke()
+            fill.stroke()
+        }
+    }
+}
+
+final class NotchHUD {
+    private var panel: NSPanel?
+    private let view = NotchHUDView()
+    var onClick: (() -> Void)? {
+        didSet { view.onClick = onClick }
+    }
+
+    static var notchedScreen: NSScreen? {
+        NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
+    }
+
+    func update(text: String, pct: Double, color: NSColor) {
+        guard let screen = Self.notchedScreen else { hide(); return }
+        let left = screen.auxiliaryTopLeftArea
+        let right = screen.auxiliaryTopRightArea
+        guard let left = left, let right = right else { hide(); return }
+        let barH = screen.safeAreaInsets.top
+        let notchW = right.minX - left.maxX
+        let flank: CGFloat = 84
+        let frame = NSRect(x: left.maxX - flank,
+                           y: screen.frame.maxY - barH,
+                           width: notchW + flank * 2,
+                           height: barH)
+        if panel == nil {
+            let p = NSPanel(contentRect: frame,
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+            p.level = .statusBar
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            p.contentView = view
+            panel = p
+        }
+        panel?.setFrame(frame, display: true)
+        view.notchWidth = notchW
+        view.leftText = text
+        view.pct = pct
+        view.color = color
+        view.needsDisplay = true
+        panel?.orderFrontRegardless()
+    }
+
+    func hide() { panel?.orderOut(nil) }
 }
 
 // MARK: - AIdometer layout (the signature speedometer dial)
@@ -634,11 +804,117 @@ final class FooterStripView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
+// Label + native NSSwitch row — an unmissable on/off control for menu views.
+final class SwitchRowView: NSView {
+    private let toggle = NSSwitch()
+    var onToggle: ((Bool) -> Void)?
+    init(label: String, width: CGFloat, isOn: Bool) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 32))
+        let l = makeLabel(label, size: 13, weight: .regular, color: .labelColor)
+        l.frame = NSRect(x: 14, y: 7, width: width - 76, height: 18)
+        addSubview(l)
+        toggle.controlSize = .small
+        toggle.state = isOn ? .on : .off
+        toggle.target = self
+        toggle.action = #selector(flip)
+        toggle.sizeToFit()
+        toggle.setFrameOrigin(NSPoint(x: width - toggle.frame.width - 14,
+                                      y: (32 - toggle.frame.height) / 2))
+        addSubview(toggle)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func flip() { onToggle?(toggle.state == .on) }
+}
+
+// Chip row: threshold values as tappable pills — filled when selected. One
+// compact row instead of a checkbox list; clicks don't dismiss the menu.
+final class ChipRowView: NSView {
+    private let values: [Double]
+    private let isOn: (Double) -> Bool
+    private let toggle: (Double) -> Void
+    var isEnabled: () -> Bool = { true }
+    private var hovered: Int? = nil
+    private var chipRects: [NSRect] = []
+
+    init(values: [Double], width: CGFloat,
+         isOn: @escaping (Double) -> Bool, toggle: @escaping (Double) -> Void) {
+        self.values = values
+        self.isOn = isOn
+        self.toggle = toggle
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+    private func chipIndex(at p: NSPoint) -> Int? {
+        chipRects.firstIndex { $0.insetBy(dx: -3, dy: -4).contains(p) }
+    }
+    override func mouseMoved(with e: NSEvent) {
+        let idx = chipIndex(at: convert(e.locationInWindow, from: nil))
+        if idx != hovered { hovered = idx; needsDisplay = true }
+    }
+    override func mouseExited(with e: NSEvent) { hovered = nil; needsDisplay = true }
+    override func mouseUp(with e: NSEvent) {
+        guard isEnabled() else { return }
+        if let idx = chipIndex(at: convert(e.locationInWindow, from: nil)) {
+            toggle(values[idx])
+            needsDisplay = true
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let enabled = isEnabled()
+        let accent = Theme.current.accent(worst: 0, worstKind: "")
+            .withAlphaComponent(enabled ? 1 : 0.35)
+        let gap: CGFloat = 6
+        let chipW = (bounds.width - 28 - gap * CGFloat(values.count - 1)) / CGFloat(values.count)
+        let chipH: CGFloat = 22
+        let y = (bounds.height - chipH) / 2
+        chipRects = []
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        for (i, v) in values.enumerated() {
+            let rect = NSRect(x: 14 + CGFloat(i) * (chipW + gap), y: y, width: chipW, height: chipH)
+            chipRects.append(rect)
+            let path = NSBezierPath(roundedRect: rect, xRadius: chipH / 2, yRadius: chipH / 2)
+            let on = isOn(v)
+            let hov = enabled ? hovered : nil
+            if on {
+                (hov == i ? accent.withAlphaComponent(0.8) : accent).setFill()
+                path.fill()
+            } else {
+                if hov == i {
+                    NSColor.labelColor.withAlphaComponent(0.12).setFill()
+                    path.fill()
+                }
+                path.lineWidth = 1
+                NSColor.tertiaryLabelColor.withAlphaComponent(enabled ? 1 : 0.4).setStroke()
+                path.stroke()
+            }
+            let label = "\(Int(v))%"
+            let lum = accent.usingColorSpace(.sRGB).map {
+                0.299 * $0.redComponent + 0.587 * $0.greenComponent + 0.114 * $0.blueComponent
+            } ?? 1
+            var color: NSColor = on ? (lum > 0.6 ? .black : .white) : .secondaryLabelColor
+            if !enabled { color = color.withAlphaComponent(0.4) }
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            let size = (label as NSString).size(withAttributes: attrs)
+            (label as NSString).draw(at: NSPoint(x: rect.midX - size.width / 2,
+                                                 y: rect.midY - size.height / 2),
+                                     withAttributes: attrs)
+        }
+    }
+}
+
 // A fixed-width caption line, so long text can't stretch the whole menu.
 final class CaptionView: NSView {
-    init(_ text: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
-        let l = makeLabel(text, size: 10.5, weight: .regular, color: .tertiaryLabelColor)
+    init(_ text: String, width: CGFloat = 320, color: NSColor = .tertiaryLabelColor) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 20))
+        let l = makeLabel(text, size: 10.5, weight: .regular, color: color)
         l.lineBreakMode = .byTruncatingTail
         l.frame = NSRect(x: 16, y: 3, width: frame.width - 32, height: 14)
         addSubview(l)
@@ -763,6 +1039,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var inSettings = false
     private var pendingRerender = false
     private var contentCount = 0   // number of leading content items (before the footer)
+    private let notchHUD = NotchHUD()
+    private let blinker = KeyboardBlinker()
+    private var lastPcts: [String: Double] = [:]   // provider:kind → last seen %, for threshold crossings
+
+    static var notifyEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "notifyEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "notifyEnabled") }
+    }
+    static var blinkEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "blinkEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "blinkEnabled") }
+    }
+    static var notifyThresholds: [Double] {
+        get { (UserDefaults.standard.array(forKey: "notifyThresholds") as? [Double]) ?? [25, 50, 70, 90, 95, 100] }
+        set { UserDefaults.standard.set(newValue, forKey: "notifyThresholds") }
+    }
     private weak var settingsStripItem: NSMenuItem?   // the footer strip (gear attaches settings to it)
     var timer: Timer?
     var updateTimer: Timer?
@@ -793,7 +1085,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.2.1"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.3.0"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -801,6 +1093,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainMenu.autoenablesItems = false   // view-based items get auto-disabled otherwise, killing their buttons
         mainMenu.delegate = self
         statusItem.menu = mainMenu
+        // Notch HUD: clicking the pill opens the regular menu; screen changes
+        // (external display, lid close) re-evaluate placement or fall back.
+        notchHUD.onClick = { [weak self] in self?.statusItem.button?.performClick(nil) }
+        requestNotifPermission()   // update alerts are always armed
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.updateStatusTitle()
+        }
         // Enable Launch at Login on first run only — a menu-bar tracker is
         // pointless if it dies on reboot. One-shot so a user's later opt-out sticks.
         if #available(macOS 13.0, *), !UserDefaults.standard.bool(forKey: "didDefaultLoginItem") {
@@ -919,6 +1219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 else if let p = plan.name { self.planName = p; self.planTier = plan.tier }
                 if let ls = parsed {
+                    self.checkThresholds(ls)
                     self.lastLimits = ls
                     self.lastSuccess = Date()
                     self.authState = .ok
@@ -1129,6 +1430,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (hasHistory ? "steady — no runout expected" : "collecting history…") + resetPart
     }
 
+    // MARK: - Threshold alerts (notifications + backlight blink)
+
+    private func requestNotifPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    /// Fires when a limit crosses one of the user-selected thresholds between
+    /// two fetches (default 25/50/70/90/95/100). One alert per jump — the
+    /// highest threshold crossed; a big % drop means the period reset and
+    /// re-arms everything.
+    private func checkThresholds(_ limits: [[String: Any]]) {
+        guard AppDelegate.notifyEnabled else { return }
+        let thresholds = AppDelegate.notifyThresholds.sorted(by: >)
+        guard !thresholds.isEmpty else { return }
+        for i in limitInfos(limits) {
+            let key = "\(Provider.current.rawValue):\(i.kind)"
+            let prev = lastPcts[key]
+            lastPcts[key] = i.pct
+            guard let prev = prev, i.pct >= prev - 5 else { continue }
+            guard let top = thresholds.first(where: { prev < $0 && i.pct >= $0 }) else { continue }
+            if AppDelegate.blinkEnabled {
+                blinker.pulse()
+                // First blink ever: explain it, or people think their Mac is
+                // haunted. Once, then never again.
+                if !UserDefaults.standard.bool(forKey: "blinkExplained") {
+                    UserDefaults.standard.set(true, forKey: "blinkExplained")
+                    let intro = UNMutableNotificationContent()
+                    intro.title = "That keyboard blink was AIdometer 🏎"
+                    intro.body = "\(i.label) crossed \(Int(top))%. Turn blinks off anytime: Settings → Backlight blink alerts."
+                    UNUserNotificationCenter.current().add(
+                        UNNotificationRequest(identifier: UUID().uuidString, content: intro, trigger: nil))
+                }
+            }
+            do {
+                let content = UNMutableNotificationContent()
+                if carVoice {
+                    content.title = top >= 90 ? "🏎 Redline!" : "🏎 \(Int(top))% on the clock"
+                    content.body = "\(i.label) at \(Int(i.pct))% — \(i.reset)"
+                } else {
+                    content.title = "\(i.label) reached \(Int(top))%"
+                    content.body = "Now at \(Int(i.pct))% — \(i.reset)"
+                }
+                content.sound = top >= 90 ? .default : nil
+                UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            }
+        }
+    }
+
+    /// One notification per new version, gated on the master notification
+    /// toggle — so updates reach people who never open the menu.
+    private func notifyUpdateAvailable(_ v: String) {
+        // Deliberately NOT gated on the notification toggle: updates carry
+        // fixes users need. macOS's own per-app notification mute still applies.
+        guard UserDefaults.standard.string(forKey: "notifiedVersion") != v else { return }
+        UserDefaults.standard.set(v, forKey: "notifiedVersion")
+        let content = UNMutableNotificationContent()
+        content.title = carVoice ? "🔧 Service due" : "Update available"
+        content.body = "AIdometer \(v) is ready — one click in the menu installs it."
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
     /// Tiny ring gauge for the menu-bar button (BarStyle.ring).
     private func ringImage(pct: Double, color: NSColor) -> NSImage {
         NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
@@ -1212,6 +1576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let noDataTitle = (authState == .expired || authState == .missing) ? "\(glyph) ⚠︎" : "\(glyph) …"
             setStatusTitle(noDataTitle, color: .secondaryLabelColor)
             statusItem.button?.image = nil
+            notchHUD.hide()
             return
         }
         if limits.isEmpty {
@@ -1219,6 +1584,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let act = codexActivity { t = "\(glyph) \(tokenText(act.todayTokens))" }
             setStatusTitle(t, color: .secondaryLabelColor)
             statusItem.button?.image = nil
+            if BarStyle.current == .notch, NotchHUD.notchedScreen != nil {
+                notchHUD.update(text: t, pct: 0, color: .secondaryLabelColor)
+            } else {
+                notchHUD.hide()
+            }
             return
         }
         let infos = limitInfos(limits)
@@ -1241,6 +1611,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case .ring:
             title = ""   // the ring image below is the whole icon
+        case .notch:
+            // Numbers live at the notch; the status item shrinks to a bare
+            // click target. Without a notched display, fall back to Compact.
+            title = NotchHUD.notchedScreen != nil ? glyph : "\(glyph) \(Int(worst))%"
         }
         // Stale data (token lapsed) gets a visible ⚠︎ and loses its color —
         // never let old numbers pass as live.
@@ -1255,6 +1629,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusItem.button?.imagePosition = finalTitle.isEmpty ? .imageOnly : .imageLeading
         } else {
             statusItem.button?.image = nil
+        }
+        if BarStyle.current == .notch, NotchHUD.notchedScreen != nil {
+            notchHUD.update(text: "\(glyph) \(Int(worst))%", pct: worst, color: titleColor)
+        } else {
+            notchHUD.hide()
         }
     }
 
@@ -1646,6 +2025,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.view = loginRow
         menu.addItem(loginItem)
 
+        // Notifications: real switches (unmissable), chips for thresholds.
+        // Chips dim and lock while the master switch is off.
+        let notifMenu = NSMenu()
+        notifMenu.autoenablesItems = false
+        let chips = ChipRowView(values: [25, 50, 70, 90, 95, 100], width: 280,
+            isOn: { AppDelegate.notifyThresholds.contains($0) },
+            toggle: { [weak self] t in
+                var set = AppDelegate.notifyThresholds
+                if let idx = set.firstIndex(of: t) { set.remove(at: idx) } else {
+                    set.append(t)
+                    self?.requestNotifPermission()
+                }
+                AppDelegate.notifyThresholds = set.sorted()
+            })
+        chips.isEnabled = { AppDelegate.notifyEnabled }
+        let masterRow = SwitchRowView(label: "Notifications", width: 280,
+                                      isOn: AppDelegate.notifyEnabled)
+        masterRow.onToggle = { [weak self, weak chips] on in
+            AppDelegate.notifyEnabled = on
+            if on { self?.requestNotifPermission() }
+            chips?.needsDisplay = true
+        }
+        let masterItem = NSMenuItem()
+        masterItem.view = masterRow
+        notifMenu.addItem(masterItem)
+        let sep1 = NSMenuItem(); sep1.view = SepView(); notifMenu.addItem(sep1)
+        let capItem = NSMenuItem()
+        capItem.view = CaptionView("Notify when a limit crosses…", width: 280, color: .secondaryLabelColor)
+        notifMenu.addItem(capItem)
+        let chipItem = NSMenuItem()
+        chipItem.view = chips
+        notifMenu.addItem(chipItem)
+        menu.addItem(submenuItem("Notifications", "bell", notifMenu))
+
+        // Backlight blink: enabling it pulses once immediately — instant demo,
+        // and proof the private API works on this machine.
+        let blinkRow = HoverRow(value: "Backlight blink alerts", width: 200)
+        blinkRow.isChecked = { AppDelegate.blinkEnabled }
+        blinkRow.onPick = { [weak self, weak blinkRow] _ in
+            AppDelegate.blinkEnabled.toggle()
+            if AppDelegate.blinkEnabled { self?.blinker.pulse() }
+            blinkRow?.needsDisplay = true
+        }
+        let blinkItem = NSMenuItem()
+        blinkItem.view = blinkRow
+        menu.addItem(blinkItem)
+
         let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesClicked), keyEquivalent: "")
         updatesItem.target = self
         updatesItem.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
@@ -1752,6 +2178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self = self else { return }
                 if let remote = remote, self.semverIsNewer(remote, than: Self.currentVersion) {
                     self.latestVersion = remote
+                    self.notifyUpdateAvailable(remote)
                     self.render()
                     if interactive { self.installUpdate() }
                 } else if interactive {
