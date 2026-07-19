@@ -2,6 +2,15 @@
 
 All notable changes to AIdometer. Dates are release dates on GitHub.
 
+## [1.4.2] — 2026-07-19
+### Added
+- **Send test alert** (Settings → Notifications) — fires a sample notification, sound and backlight blink on demand, so you can verify alerts actually reach you (permission, Focus modes, alert style and all).
+### Fixed
+- **Threshold alerts now survive restarts.** Crossing baselines were kept in memory only, so a limit that crossed a threshold while the app was off — during updates, reboots, or overnight — was silently absorbed as a "new baseline" on the next launch. Baselines are now persisted; the crossing alerts on the next check.
+- **Alerts now show while AIdometer is the active app.** macOS hides notifications an app posts about itself while frontmost unless it opts in; that ate alerts landing right after launch (e.g. on the first check after an update relaunches the app).
+### Changed
+- The keyboard backlight blink is far more noticeable: six full-swing flashes (100% ↔ off) over ~2.5 seconds, instead of three soft flickers in under a second.
+
 ## [1.4.1] — 2026-07-12
 ### Changed
 - The Claude Code CLI status line is now on by default (first run only, and only if Claude Code is installed; a later opt-out sticks; any existing status line is backed up).
