@@ -2,6 +2,13 @@
 
 All notable changes to AIdometer. Dates are release dates on GitHub.
 
+## [1.4.1] — 2026-07-12
+### Changed
+- The Claude Code CLI status line is now on by default (first run only, and only if Claude Code is installed; a later opt-out sticks; any existing status line is backed up).
+- Update checks run hourly instead of daily, so new releases are noticed faster.
+### Fixed
+- The "What's New" summary now appears for existing users after an update, not just future installs.
+
 ## [1.4.0] — 2026-07-12
 ### Added
 - **Claude Code CLI status line** — show your Claude/Codex usage limits right in your terminal prompt, alongside model and context %. Enable it in Settings; it merges safely into ~/.claude/settings.json (backing up any existing status line) and reads a local cache, so no credentials ever touch disk. The line is honest about freshness — it shows how old the numbers are.

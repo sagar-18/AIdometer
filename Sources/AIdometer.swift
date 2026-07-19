@@ -1085,26 +1085,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.4.0"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.4.1"
 
     /// Highlights shown in the "What's New" dialog after an update. Keep the top
     /// entry in sync with the release being shipped.
-    static let whatsNew: (version: String, lines: [String]) = ("1.4.0", [
-        "⌨️  Claude Code CLI status line — show your Claude/Codex usage right in your terminal prompt (Settings → enable it)",
-        "🕐  The status line is honest about freshness — it shows how old the numbers are",
-        "🔔  Update notifications now announce new releases even if you never open the menu",
+    static let whatsNew: (version: String, lines: [String]) = ("1.4.1", [
+        "⌨️  The Claude Code CLI status line is now on by default — your Claude/Codex usage shows in your terminal prompt (turn it off anytime in Settings)",
+        "⏱️  Update checks now run hourly, so new releases are noticed faster",
+        "🎉  You're seeing this because the 'What's New' summary now works for updates too, not just fresh installs",
     ])
 
     /// Shows the highlights once per new version (never on a fresh install).
     private func showWhatsNewIfUpdated() {
         let key = "lastWhatsNewVersion"
         let seen = UserDefaults.standard.string(forKey: key)
-        // Fresh install (nothing seen yet): just record, don't pop.
-        guard let seen = seen else {
-            UserDefaults.standard.set(Self.currentVersion, forKey: key)
-            return
-        }
-        guard seen != Self.currentVersion, Self.currentVersion == Self.whatsNew.version else {
+        // No record yet: could be a genuine fresh install, OR an existing user
+        // upgrading into the version that first shipped this feature. Tell them
+        // apart by prior app state — existing users have run the app before.
+        if seen == nil {
+            let existingUser = UserDefaults.standard.bool(forKey: "didDefaultLoginItem")
+                || (UserDefaults.standard.array(forKey: "usageHistory")?.isEmpty == false)
+            if !existingUser {
+                UserDefaults.standard.set(Self.currentVersion, forKey: key)
+                return   // fresh install — no changelog for versions they never had
+            }
+            // else: fall through and show What's New for the just-updated build
+        } else if seen == Self.currentVersion || Self.currentVersion != Self.whatsNew.version {
             UserDefaults.standard.set(Self.currentVersion, forKey: key)
             return
         }
@@ -1144,10 +1150,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try? SMAppService.mainApp.register()
             }
         }
+        // Enable the Claude Code CLI status line on first run only, and only if
+        // Claude Code is actually installed (settings dir exists) — don't touch
+        // a config that isn't there. One-shot so a later opt-out sticks.
+        if !UserDefaults.standard.bool(forKey: "didDefaultStatusline") {
+            UserDefaults.standard.set(true, forKey: "didDefaultStatusline")
+            if FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude"), !statuslineEnabled {
+                setStatusline(true)
+            }
+        }
         tick()
-        // Check for updates shortly after launch, then daily.
+        // Check for updates shortly after launch, then hourly.
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.checkForUpdates() }
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
         // Refetch right after wake — timers sleep with the machine, and the
