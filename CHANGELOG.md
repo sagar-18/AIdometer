@@ -2,6 +2,11 @@
 
 All notable changes to AIdometer. Dates are release dates on GitHub.
 
+## [1.4.0] — 2026-07-12
+### Added
+- **Claude Code CLI status line** — show your Claude/Codex usage limits right in your terminal prompt, alongside model and context %. Enable it in Settings; it merges safely into ~/.claude/settings.json (backing up any existing status line) and reads a local cache, so no credentials ever touch disk. The line is honest about freshness — it shows how old the numbers are.
+- **What's New dialog** — after updating, a one-time summary of what changed (never on a fresh install).
+
 ## [1.3.0] — 2026-07-12
 - **Notch HUD** — new Menu Bar Style: usage readouts hug the MacBook notch (percentage on the left flank, mini gauge on the right), always visible, click to open the menu. Auto-falls back to Compact on displays without a notch.
 - **Threshold notifications** — native alerts when a limit crosses a chosen threshold (defaults: 25/50/70/90/95/100%, multi-selectable in Settings → Notifications; once per period; car mode says "Redline!"). On by default. New releases also fire an "Update available" notification, once per version.
