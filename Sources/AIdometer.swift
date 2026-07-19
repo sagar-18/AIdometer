@@ -315,23 +315,19 @@ final class KeyboardBlinker {
 
     var available: Bool { client != nil }
 
-    /// Three quick blinks, then restore the original brightness.
-    func pulse(times: Int = 3) {
+    /// Hard full-swing blinks (100% ↔ off) for maximum contrast in any ambient
+    /// light, then restore the original brightness.
+    func pulse(times: Int = 6) {
         guard let client = client, !busy else { return }
         let ids = client.copyKeyboardBacklightIDs().map { $0.uint64Value }
         guard !ids.isEmpty else { return }
         busy = true
         let original = ids.map { (id: $0, level: client.brightness(forKeyboard: $0)) }
-        let interval = 0.16
+        let interval = 0.22
         for i in 0..<(times * 2) {
             DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(i)) {
-                let on = i % 2 == 0
-                for o in original {
-                    // Blink visibly whatever the current level: bright if the
-                    // backlight is dim/off, dark if it's already bright.
-                    let blinkLevel: Float = o.level > 0.5 ? 0 : 1
-                    _ = client.setBrightness(on ? blinkLevel : o.level, forKeyboard: o.id)
-                }
+                let level: Float = i % 2 == 0 ? 1 : 0
+                for o in original { _ = client.setBrightness(level, forKeyboard: o.id) }
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(times * 2) + 0.05) { [weak self] in
@@ -1030,7 +1026,7 @@ final class SepView: NSView {
 
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     var statusItem: NSStatusItem!
     /// One persistent menu whose items are swapped in place — this is what lets
     /// the open menu update live (refresh in place, settings drill-down).
@@ -1041,7 +1037,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var contentCount = 0   // number of leading content items (before the footer)
     private let notchHUD = NotchHUD()
     private let blinker = KeyboardBlinker()
-    private var lastPcts: [String: Double] = [:]   // provider:kind → last seen %, for threshold crossings
+    // provider:kind → last seen %, for threshold crossings. Persisted so a
+    // crossing that spans an app restart (updates, reboots, overnight) still
+    // alerts — in-memory-only baselines silently swallowed those.
+    private var lastPcts: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "lastPcts") as? [String: Double]) ?? [:]
 
     static var notifyEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "notifyEnabled") as? Bool ?? true }
@@ -1085,14 +1085,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Falls back to the build-time version when run outside the .app bundle.
     /// Keep the fallback in sync with VERSION in build.sh.
     static let currentVersion =
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.4.1"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.4.2"
 
     /// Highlights shown in the "What's New" dialog after an update. Keep the top
     /// entry in sync with the release being shipped.
-    static let whatsNew: (version: String, lines: [String]) = ("1.4.1", [
-        "⌨️  The Claude Code CLI status line is now on by default — your Claude/Codex usage shows in your terminal prompt (turn it off anytime in Settings)",
-        "⏱️  Update checks now run hourly, so new releases are noticed faster",
-        "🎉  You're seeing this because the 'What's New' summary now works for updates too, not just fresh installs",
+    static let whatsNew: (version: String, lines: [String]) = ("1.4.2", [
+        "🔔  Threshold alerts now survive restarts — a limit that crosses 25/50/70/90% while the app was off (updates, reboots, overnight) alerts on the next check instead of being missed",
+        "📣  Alerts also show when AIdometer is the active app — macOS used to hide those",
+        "⌨️  The keyboard backlight blink is much more noticeable: six full-brightness flashes over ~2.5s",
+        "🧪  New in Settings → Notifications: Send test alert — verify banners, sound and blink reach you anytime",
     ])
 
     /// Shows the highlights once per new version (never on a fresh install).
@@ -1136,6 +1137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Notch HUD: clicking the pill opens the regular menu; screen changes
         // (external display, lid close) re-evaluate placement or fall back.
         notchHUD.onClick = { [weak self] in self?.statusItem.button?.performClick(nil) }
+        // Without a delegate, macOS drops notifications posted while the app
+        // is frontmost — which is exactly when a crossing lands right after launch.
+        UNUserNotificationCenter.current().delegate = self
         requestNotifPermission()   // update alerts are always armed
         showWhatsNewIfUpdated()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
@@ -1597,6 +1601,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Threshold alerts (notifications + backlight blink)
 
+    /// The full alert pipeline with sample data — notification banner, sound,
+    /// and backlight blink — so a user can verify alerts reach them without
+    /// waiting for a real crossing.
+    private func sendTestAlert() {
+        requestNotifPermission()
+        if AppDelegate.blinkEnabled { blinker.pulse() }
+        let content = UNMutableNotificationContent()
+        if carVoice {
+            content.title = "🏎 Test lap"
+            content.body = "This is how a limit alert looks. Engine sounds good."
+        } else {
+            content.title = "Test alert"
+            content.body = "This is how a limit alert looks. Notifications are working."
+        }
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// Present banners even when the app is frontmost (macOS suppresses them otherwise).
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
+    }
+
     private func requestNotifPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
@@ -1606,7 +1635,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// highest threshold crossed; a big % drop means the period reset and
     /// re-arms everything.
     private func checkThresholds(_ limits: [[String: Any]]) {
-        guard AppDelegate.notifyEnabled else { return }
+        defer { UserDefaults.standard.set(lastPcts, forKey: "lastPcts") }
+        guard AppDelegate.notifyEnabled else {
+            // Still record baselines while muted, so re-enabling doesn't
+            // fire a burst of stale crossings.
+            for i in limitInfos(limits) { lastPcts["\(Provider.current.rawValue):\(i.kind)"] = i.pct }
+            return
+        }
         let thresholds = AppDelegate.notifyThresholds.sorted(by: >)
         guard !thresholds.isEmpty else { return }
         for i in limitInfos(limits) {
@@ -2222,6 +2257,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let chipItem = NSMenuItem()
         chipItem.view = chips
         notifMenu.addItem(chipItem)
+        let sep2 = NSMenuItem(); sep2.view = SepView(); notifMenu.addItem(sep2)
+        // Lets anyone prove the notification + blink pipeline reaches them on
+        // this Mac — permission, Focus modes, alert style, all of it.
+        let testRow = HoverRow(value: "Send test alert", width: 280)
+        testRow.isChecked = { false }
+        testRow.onPick = { [weak self] _ in self?.sendTestAlert() }
+        let testItem = NSMenuItem()
+        testItem.view = testRow
+        notifMenu.addItem(testItem)
         menu.addItem(submenuItem("Notifications", "bell", notifMenu))
 
         // Backlight blink: enabling it pulses once immediately — instant demo,
