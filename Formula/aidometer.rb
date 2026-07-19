@@ -2,8 +2,8 @@ class Aidometer < Formula
   desc "The odometer for your AI — Claude & Codex usage limits in your menu bar"
   homepage "https://github.com/sagar-18/AIdometer"
   license "MIT"
-  url "https://github.com/sagar-18/AIdometer/archive/refs/tags/v1.2.1.tar.gz"
-  sha256 "f44f35fd445ecedca6aae4750fcc64c5829f5909d4df857c02acba6444b39723"
+  url "https://github.com/sagar-18/AIdometer/archive/refs/tags/v1.3.0.tar.gz"
+  sha256 "e0702fe02cf8c5f97f331ff0b374908991c3da720f62035c92578185c40cb442"
 
   # Builds from source (locally compiled → no Gatekeeper quarantine, no signing needed).
   head "https://github.com/sagar-18/AIdometer.git", branch: "main"
