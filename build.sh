@@ -5,7 +5,7 @@ set -euo pipefail
 
 OUT="${1:-.}"
 APP="$OUT/AIdometer.app"
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 DIR="$(dirname "$0")"
 
